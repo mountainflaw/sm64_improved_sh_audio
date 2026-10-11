@@ -163,7 +163,7 @@ endif
 # 4 VADPCM predictors, at the cost of more RAM usage.
 
 ifeq ($(VERSION_SH_CN),true)
-  VADPCM_BITS ?= 2
+  VADPCM_BITS ?= 4
 else
   VADPCM_BITS := 4
 endif
@@ -485,7 +485,7 @@ else
 endif
 ENDIAN_BITWIDTH       := $(BUILD_DIR)/endian-and-bitwidth
 EMULATOR = parallel-launcher
-EMU_FLAGS = --noosd
+EMU_FLAGS =
 LOADER = loader64
 LOADER_FLAGS = -vwf
 SHA1SUM = sha1sum
