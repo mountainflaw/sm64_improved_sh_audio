@@ -31,6 +31,8 @@ A_AUX      equ 0x08
 A_NOAUX    equ 0x00
 A_MAIN     equ 0x00
 A_MIX      equ 0x10
+A_ADPCM_SHORT equ 0x04 // cmd_ADPCM: 2-bit (5 bytes/frame) "small" VADPCM, as in OoT's aspMain
+A_ADPCM_3BIT  equ 0x0c // cmd_ADPCM: 3-bit (7 bytes/frame) VADPCM; includes A_ADPCM_SHORT
 
 .create DATA_FILE, 0x0000
 
@@ -67,7 +69,7 @@ dispatchTable:
   jumpTableEntry cmd_LOADBUFF
   jumpTableEntry cmd_SAVEBUFF
   jumpTableEntry cmd_ENVSETUP2
-  jumpTableEntry cmd_S8DEC
+  jumpTableEntry cmd_SPNOOP // cmd_S8DEC, see OMIT_S8DEC
 
   jumpTableEntry cmd_HILOGAIN
   jumpTableEntry cmd_1c7c
@@ -185,6 +187,15 @@ audio_wet_gain      equ 0x1e // 0x37e
 
 .definelabel dmemBase,      0x5c0 // all samples stored that is transferred to DMEM
 .definelabel tmpData,       0xF90 // temporary area
+
+.ifdef VERSION_SH_CN
+// Scratch area where cmd_ADPCM writes its 2-bit ("small") VADPCM decode tables
+// before each decode when A_ADPCM_SHORT is set. 0xF90-0xFC0 is unused by the
+// SH/CN microcode (tmpData is never referenced), lies below the OSTask at 0xFC0,
+// and the C side uses DMEM only up to 0xF90. The tables are regenerated from
+// immediates every time so no DMEM contents need to survive between commands.
+.definelabel adpcmShortTables, 0xF90
+.endif
 
 .close // DATA_FILE
 
@@ -602,6 +613,30 @@ cmd_ADPCM:
     lw    $3, (segmentTable)($2)
     add   $17, $17, $3          // last frame addr
 .endif
+.ifdef VERSION_SH_CN
+    // A_ADPCM_SHORT selects 2-bit frames (1b header + 4b data) and
+    // A_ADPCM_3BIT 3-bit frames (1b header + 4b holding the upper 2 bits
+    // of each sample + 2b holding the low bits) instead of 4-bit frames
+    // (1b header + 8b of data). Everything that differs between the formats
+    // is kept in registers so the decode loop is shared:
+    //   $6 = 0 or 4 (A_ADPCM_SHORT), $7 = frame size (9, 5 or 7),
+    //   $8 = max shift (12, 14 or 13),
+    //   $9 = -(offset of the data that goes into $v1[2..3]) (-4, -2 or -2),
+    //   $22 = offset of the data that goes into $v1[1] (2, 2 or 3)
+    srl   $6, $26, 16
+    andi  $22, $6, 0x0008       // the bit A_ADPCM_3BIT adds to A_ADPCM_SHORT
+    andi  $6, $6, A_ADPCM_SHORT
+    addi  $7, $zero, 9
+    sub   $7, $7, $6            // 9 or 5
+    srl   $8, $6, 1
+    addi  $9, $8, -4            // -4 or -2
+    addi  $8, $8, 12            // 12 or 14
+    srl   $22, $22, 2           // 0 or 2
+    add   $7, $7, $22           // 9, 5 or 7
+    srl   $22, $22, 1           // 0 or 1
+    sub   $8, $8, $22           // 12, 14 or 13
+    addi  $22, $22, 2           // 2, 2 or 3
+.endif
     sqv   $v27[0], 0x00($19)
     sqv   $v27[0], 0x10($19)
     srl   $1, $26, 16
@@ -623,7 +658,64 @@ cmd_ADPCM:
     mtc0  $zero, SP_SEMAPHORE
 @@audio_0400150c:
 .ifdef VERSION_SH_CN
-    addi  $16, $zero, 0x0050
+    beqz  $6, @@adpcm_long_tables
+     addi  $16, $zero, 0x0050
+    // 2-bit and 3-bit: write the tables to scratch DMEM, then load them. $v25 gets
+    // the masks selecting each of the 8 2-bit samples of a 16-bit word
+    // (c000 3000 0c00 0300 00c0 0030 000c 0003) and $v23 the multipliers that move
+    // each masked sample to bits 14-15 (0001 0004 0010 0040 0100 0400 1000 4000).
+    // For 2-bit frames $v24 stays zero so the vand/vmadn pairs below only see
+    // $v1[0] and $v1[2]. For 3-bit frames $v24 gets the masks selecting each bit of
+    // the low byte of a word (0001 0002 0004 0008 0010 0020 0040 0080) and $v8 the
+    // multipliers that move that bit to bit 13 (2000 1000 0800 0400 0200 0100 0080
+    // 0040), so $v1[1] and $v1[3] contribute the low bit of each sample.
+    addi  $16, $zero, adpcmShortTables
+    lui   $1, 0xc000
+    ori   $1, $1, 0x3000
+    sw    $1, 0x00($16)
+    srl   $1, $1, 4
+    sw    $1, 0x04($16)
+    srl   $1, $1, 4
+    sw    $1, 0x08($16)
+    srl   $1, $1, 4
+    sw    $1, 0x0c($16)
+    lui   $1, 0x0001
+    ori   $1, $1, 0x0004
+    sw    $1, 0x10($16)
+    sll   $1, $1, 4
+    sw    $1, 0x14($16)
+    sll   $1, $1, 4
+    sw    $1, 0x18($16)
+    sll   $1, $1, 4
+    sw    $1, 0x1c($16)
+    lqv   $v25[0], 0x00($16)
+    addi  $1, $22, -2           // 0 for 2-bit frames, 1 for 3-bit frames
+    beqz  $1, @@adpcm_short_tables_loaded
+     lqv   $v23[0], 0x10($16)
+    lui   $1, 0x0001
+    ori   $1, $1, 0x0002
+    sw    $1, 0x00($16)
+    sll   $1, $1, 2
+    sw    $1, 0x04($16)
+    sll   $1, $1, 2
+    sw    $1, 0x08($16)
+    sll   $1, $1, 2
+    sw    $1, 0x0c($16)
+    lui   $1, 0x2000
+    ori   $1, $1, 0x1000
+    sw    $1, 0x10($16)
+    srl   $1, $1, 2
+    sw    $1, 0x14($16)
+    srl   $1, $1, 2
+    sw    $1, 0x18($16)
+    srl   $1, $1, 2
+    sw    $1, 0x1c($16)
+    lqv   $v24[0], 0x00($16)
+    lqv   $v8[0], 0x10($16)
+@@adpcm_short_tables_loaded:
+    b     @@adpcm_tables_loaded
+     addi  $15, $zero, adpcmTable
+@@adpcm_long_tables:
 .else
     addi  $16, $zero, 0x0030
 .endif
@@ -632,10 +724,31 @@ cmd_ADPCM:
     ldv   $v24[8], 0x00($16)
     ldv   $v23[0], 0x08($16)
     ldv   $v23[8], 0x08($16)
+.ifdef VERSION_SH_CN
+    // 4-bit frames use the same multipliers for both vand/vmadn terms
+    ldv   $v8[0], 0x08($16)
+    ldv   $v8[8], 0x08($16)
+@@adpcm_tables_loaded:
+.endif
     lqv   $v27[0], 0x10($19)    // last 8 frames
     addi  $19, $19, 0x20
+.ifdef VERSION_SH_CN
+    sub   $10, $20, $9
+    add   $12, $20, $22
+.endif
     beqz  $18, @@audio_040016e8
      ldv   $v1[0], 0x00($20)
+.ifdef VERSION_SH_CN
+    // $v1 = [h0, h1, h2, h3] for 4-bit frames (16 samples in 4 words), or
+    // [h0, h1, h1, h2] for 2-bit frames: the vand below picks h0 for the first
+    // 8 samples via $v1[0] and h1 for the last 8 via $v1[2]. A 3-bit frame is
+    // h0 h1 b0 b1 (h0, h1: upper 2 bits of the samples as in a 2-bit frame; b0,
+    // b1: low bits of samples 0-7 and 8-15, bit n = sample n), and $v1 becomes
+    // [h0, h1lo:b0, h1, b0:b1] so that $v1[1] and $v1[3] hold b0 and b1 in their
+    // low bytes
+    llv   $v1[4], 0x00($10)
+    lsv   $v1[2], 0x00($12)
+.endif
     lbu   $1, 0x00($21)
     andi  $11, $1, 0x000f
     sll   $11, $11, 5
@@ -644,6 +757,14 @@ cmd_ADPCM:
     vand  $v4, $v24, $v1[1]
     srl   $14, $1, 4
     vand  $v5, $v25, $v1[2]
+.ifdef VERSION_SH_CN
+    // $v22[0] = 0x10000 >> (maxShift - shift) = 2^(16 - maxShift + shift): the
+    // multiplier that moves a sample from the top bits down to its shift
+    sub   $14, $8, $14
+    vand  $v6, $v24, $v1[3]
+    lui   $3, 1
+    srlv  $4, $3, $14
+.else
     addi  $2, $zero, 12
     vand  $v6, $v24, $v1[3]
     sub   $14, $2, $14
@@ -651,6 +772,7 @@ cmd_ADPCM:
     addi  $3, $zero, 1
     sll   $3, $3, 15
     srlv  $4, $3, $2
+.endif
     mtc2  $4, $v22[0]
     lqv   $v21[0], 0x00($13)
     lqv   $v20[0], 0x10($13)
@@ -668,7 +790,21 @@ cmd_ADPCM:
     lrv   $v14[0], 0x20($13)
     addi  $13, $13, -2
     lrv   $v13[0], 0x20($13)
-@@audio_040015b4:
+@@audio_040015b4: // new decoder
+.ifdef VERSION_SH_CN
+    add   $20, $20, $7
+    vmudn $v30, $v3, $v23
+    add   $21, $21, $7
+    vmadn $v30, $v4, $v8
+    sub   $10, $20, $9
+    ldv   $v1[0], 0x00($20)
+    vmudn $v29, $v5, $v23
+    llv   $v1[4], 0x00($10)
+    add   $12, $20, $22
+    lsv   $v1[2], 0x00($12)
+    lbu   $1, 0x00($21)
+    vmadn $v29, $v6, $v8
+.else
     addi  $20, $20, 9
     vmudn $v30, $v3, $v23
     addi  $21, $21, 9
@@ -677,6 +813,7 @@ cmd_ADPCM:
     vmudn $v29, $v5, $v23
     lbu   $1, 0x00($21)
     vmadn $v29, $v6, $v23
+.endif
     blez  $14, @@audio_040015e4
      andi  $11, $1, 0x000f
     vmudm $v30, $v30, $v22[0]
@@ -690,6 +827,16 @@ cmd_ADPCM:
     vand  $v6, $v24, $v1[3]
     srl   $14, $1, 4
     vmudh $v2, $v21, $v27[6]
+.ifdef VERSION_SH_CN // new decoder
+    sub   $14, $8, $14
+    vmadh $v2, $v20, $v27[7]
+    vmadh $v2, $v19, $v30[0]
+    lui   $3, 1
+    vmadh $v2, $v18, $v30[1]
+    srlv  $4, $3, $14
+    vmadh $v2, $v17, $v30[2]
+    vmadh $v2, $v16, $v30[3]
+.else
     addi  $2, $zero, 12
     vmadh $v2, $v20, $v27[7]
     sub   $14, $2, $14
@@ -701,6 +848,7 @@ cmd_ADPCM:
     sll   $3, $3, 15
     vmadh $v2, $v16, $v30[3]
     srlv  $4, $3, $2
+.endif
     vmadh $v28, $v15, $v30[4]
     mtc2  $4, $v22[0]
     vmadh $v2, $v14, $v30[5]
@@ -1612,6 +1760,11 @@ cmd_MIXER:
     j cmd_SPNOOP
      nop
 
+// SM64 never stores a sample as raw signed 8-bit PCM, so the SH/CN build leaves
+// cmd_S8DEC out (its dispatch entry is cmd_SPNOOP) to make room for the 2-bit
+// and 3-bit VADPCM decoders in cmd_ADPCM. Remove this guard to get it back.
+.definelabel OMIT_S8DEC, 1
+.ifndef OMIT_S8DEC
 cmd_S8DEC:
     lhu   $13, (audio_in_buf)(r24)
     vxor  $v2, $v2, $v2
@@ -1663,6 +1816,7 @@ cmd_S8DEC:
      nop
     j     cmd_SPNOOP
      mtc0 $0, sp_semaphore
+.endif
 
 cmd_HILOGAIN:
     andi  $12, $26, 0xffff

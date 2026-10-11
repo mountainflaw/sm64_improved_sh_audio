@@ -51,6 +51,7 @@ s32 main(s32 argc, char **argv)
     u32 ts;
     s32 soundPointer;
     s32 cType;
+    s32 frameSize = 9;
     s32 offset;
     s32 currPos = 0;
     s32 nSamples;
@@ -137,7 +138,15 @@ s32 main(s32 argc, char **argv)
             BSWAP16(CommChunk.compressionTypeH)
             BSWAP16(CommChunk.compressionTypeL)
             cType = (CommChunk.compressionTypeH << 16) + CommChunk.compressionTypeL;
-            if (cType != 0x56415043) // VAPC
+            if (cType == 0x41445035) // ADP5: 2-bit samples, 5 bytes per frame
+            {
+                frameSize = 5;
+            }
+            else if (cType == 0x41445037) // ADP7: 3-bit samples, 7 bytes per frame
+            {
+                frameSize = 7;
+            }
+            else if (cType != 0x56415043 && cType != 0x41445039) // VAPC / ADP9
             {
                 fprintf(stderr, "%s: file [%s] is of the wrong compression type.\n", progname, argv[1]);
                 exit(1);
@@ -242,7 +251,7 @@ s32 main(s32 argc, char **argv)
             while (currPos < aloops[i].end)
             {
                 left = aloops[i].end - currPos;
-                vdecodeframe(ifile, outp, order, coefTable);
+                vdecodeframe(ifile, outp, order, coefTable, frameSize);
                 writeout(stdout, left < 16 ? left : 16, outp, outp, 1);
                 currPos += 16;
             }
@@ -250,7 +259,7 @@ s32 main(s32 argc, char **argv)
             while (read(STDIN_FILENO, &cc, 1) == 0)
             {
                 framePos = (aloops[i].start >> 4) + 1;
-                fseek(ifile, (framePos * 9) + soundPointer, SEEK_SET);
+                fseek(ifile, (framePos * frameSize) + soundPointer, SEEK_SET);
                 for (j = 0; j < 16; j++)
                 {
                     outp[j] = aloops[i].state[j];
@@ -261,7 +270,7 @@ s32 main(s32 argc, char **argv)
                 while (currPos < aloops[i].end)
                 {
                     left = aloops[i].end - currPos;
-                    vdecodeframe(ifile, outp, order, coefTable);
+                    vdecodeframe(ifile, outp, order, coefTable, frameSize);
                     writeout(stdout, left < 16 ? left : 16, outp, outp, 1);
                     currPos += 16;
                 }
@@ -275,7 +284,7 @@ s32 main(s32 argc, char **argv)
 
             while (currPos < nSamples)
             {
-                vdecodeframe(ifile, outp, order, coefTable);
+                vdecodeframe(ifile, outp, order, coefTable, frameSize);
                 left = nSamples - currPos;
                 writeout(stdout, left < 16 ? left : 16, outp, outp, 1);
                 currPos += 16;
@@ -290,7 +299,7 @@ s32 main(s32 argc, char **argv)
     {
         while (currPos < nSamples)
         {
-            vdecodeframe(ifile, outp, order, coefTable);
+            vdecodeframe(ifile, outp, order, coefTable, frameSize);
             writeout(stdout, 16, outp, outp, 1);
             currPos += 16;
         }

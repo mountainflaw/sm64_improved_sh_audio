@@ -493,7 +493,8 @@ u64 *synthesis_process_note(s32 noteIndex, struct NoteSubEu *noteSubEu, struct N
                 samplesLenAdjusted = nSamplesToLoad;
             }
 
-            if (audioBookSample->codec == CODEC_ADPCM) {
+            if (audioBookSample->codec == CODEC_ADPCM || audioBookSample->codec == CODEC_SMALL_ADPCM
+                || audioBookSample->codec == CODEC_ADPCM_3BIT) {
                 if (curLoadedBook != (*audioBookSample->book).book) {
                     u32 nEntries;
                     switch (noteSubEu->bookOffset) {
@@ -552,6 +553,18 @@ u64 *synthesis_process_note(s32 noteIndex, struct NoteSubEu *noteSubEu, struct N
                         sp88 = 0x10;
                         sp84 = 0;
                         break;
+                    case CODEC_SMALL_ADPCM:
+                        // 16 samples compressed into 2-bit samples (4 bytes) + 1 header byte
+                        unk_s6 = 5;
+                        sp88 = 0x10;
+                        sp84 = 0;
+                        break;
+                    case CODEC_ADPCM_3BIT:
+                        // 16 samples compressed into 3-bit samples (6 bytes) + 1 header byte
+                        unk_s6 = 7;
+                        sp88 = 0x10;
+                        sp84 = 0;
+                        break;
                     case CODEC_S8:
                         unk_s6 = 0x10;
                         sp88 = 0x10;
@@ -590,6 +603,18 @@ u64 *synthesis_process_note(s32 noteIndex, struct NoteSubEu *noteSubEu, struct N
                             aSetBuffer(cmd++, 0, addr + a3, DMEM_ADDR_UNCOMPRESSED_NOTE, s0 * 2);
                             aADPCMdec(cmd++, flags, VIRTUAL_TO_PHYSICAL2(synthesisState->synthesisBuffers->adpcmdecState));
                             break;
+                        case CODEC_SMALL_ADPCM:
+                            aligned = ALIGN(t0 * unk_s6 + 16, 4);
+                            addr = (DMEM_ADDR_COMPRESSED_ADPCM_DATA - aligned) & 0xffff;
+                            aSetBuffer(cmd++, 0, addr + a3, DMEM_ADDR_UNCOMPRESSED_NOTE, s0 * 2);
+                            aADPCMdec(cmd++, flags | A_ADPCM_SHORT, VIRTUAL_TO_PHYSICAL2(synthesisState->synthesisBuffers->adpcmdecState));
+                            break;
+                        case CODEC_ADPCM_3BIT:
+                            aligned = ALIGN(t0 * unk_s6 + 16, 4);
+                            addr = (DMEM_ADDR_COMPRESSED_ADPCM_DATA - aligned) & 0xffff;
+                            aSetBuffer(cmd++, 0, addr + a3, DMEM_ADDR_UNCOMPRESSED_NOTE, s0 * 2);
+                            aADPCMdec(cmd++, flags | A_ADPCM_3BIT, VIRTUAL_TO_PHYSICAL2(synthesisState->synthesisBuffers->adpcmdecState));
+                            break;
                         case CODEC_S8:
                             aligned = ALIGN(t0 * unk_s6 + 16, 4);
                             addr = (DMEM_ADDR_COMPRESSED_ADPCM_DATA - aligned) & 0xffff;
@@ -606,6 +631,18 @@ u64 *synthesis_process_note(s32 noteIndex, struct NoteSubEu *noteSubEu, struct N
                             addr = (DMEM_ADDR_COMPRESSED_ADPCM_DATA - aligned) & 0xffff;
                             aSetBuffer(cmd++, 0, addr + a3, DMEM_ADDR_UNCOMPRESSED_NOTE + s5Aligned, s0 * 2);
                             aADPCMdec(cmd++, flags, VIRTUAL_TO_PHYSICAL2(synthesisState->synthesisBuffers->adpcmdecState));
+                            break;
+                        case CODEC_SMALL_ADPCM:
+                            aligned = ALIGN(t0 * unk_s6 + 16, 4);
+                            addr = (DMEM_ADDR_COMPRESSED_ADPCM_DATA - aligned) & 0xffff;
+                            aSetBuffer(cmd++, 0, addr + a3, DMEM_ADDR_UNCOMPRESSED_NOTE + s5Aligned, s0 * 2);
+                            aADPCMdec(cmd++, flags | A_ADPCM_SHORT, VIRTUAL_TO_PHYSICAL2(synthesisState->synthesisBuffers->adpcmdecState));
+                            break;
+                        case CODEC_ADPCM_3BIT:
+                            aligned = ALIGN(t0 * unk_s6 + 16, 4);
+                            addr = (DMEM_ADDR_COMPRESSED_ADPCM_DATA - aligned) & 0xffff;
+                            aSetBuffer(cmd++, 0, addr + a3, DMEM_ADDR_UNCOMPRESSED_NOTE + s5Aligned, s0 * 2);
+                            aADPCMdec(cmd++, flags | A_ADPCM_3BIT, VIRTUAL_TO_PHYSICAL2(synthesisState->synthesisBuffers->adpcmdecState));
                             break;
                         case CODEC_S8:
                             aligned = ALIGN(t0 * unk_s6 + 16, 4);

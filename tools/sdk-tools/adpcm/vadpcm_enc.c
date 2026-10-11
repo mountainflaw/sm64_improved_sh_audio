@@ -5,7 +5,7 @@
 #include <getopt.h>
 #include "vadpcm.h"
 
-static char usage[] = "[-t -l min_loop_length] -c codebook aifcfile compressedfile";
+static char usage[] = "[-t -s -b bits -l min_loop_length] -c codebook aifcfile compressedfile\n  -b bits  bits per sample: 4 (standard VADPCM, 9 bytes per 16-sample frame, AIFC type\n           VAPC), 3 (7 bytes per frame, AIFC type ADP7) or 2 (\"small\" VADPCM, 5 bytes\n           per frame, AIFC type ADP5)\n  -s       same as -b 2";
 
 int main(int argc, char **argv)
 {
@@ -22,6 +22,8 @@ int main(int argc, char **argv)
     s32 npredictors;
     s32 done = 0;
     s32 truncate = 0;
+    s32 encBits = 4;
+    s32 frameSize;
     s32 num;
     s32 tableSize;
     s32 nsam;
@@ -41,7 +43,7 @@ int main(int argc, char **argv)
     s32 cType;
     s32 nBytes = 0;
     u32 loopEnd;
-    char *compName = "VADPCM ~4-1";
+    char *compName;
     char *appCodeName = "VADPCMCODES";
     char *appLoopName = "VADPCMLOOPS";
     u8 strnLen;
@@ -71,7 +73,7 @@ int main(int argc, char **argv)
         exit(1);
     }
 
-    while ((c = getopt(argc, argv, "tc:l:")) != -1)
+    while ((c = getopt(argc, argv, "tsb:c:l:")) != -1)
     {
         switch (c)
         {
@@ -100,6 +102,19 @@ int main(int argc, char **argv)
             truncate = 1;
             break;
 
+        case 's':
+            encBits = 2;
+            break;
+
+        case 'b':
+            sscanf(optarg, "%d", &encBits);
+            if (encBits < 2 || encBits > 4)
+            {
+                fprintf(stderr, "%s: -b takes 2, 3 or 4\n", argv[0]);
+                exit(1);
+            }
+            break;
+
         case 'l':
             sscanf(optarg, "%d", &minLoopLength);
             break;
@@ -114,6 +129,9 @@ int main(int argc, char **argv)
         fprintf(stderr, "You should specify a coefficient codebook with the [-c] option\n");
         exit(1);
     }
+
+    frameSize = (encBits == 4) ? 9 : (encBits == 3) ? 7 : 5;
+    compName = (encBits == 4) ? "VADPCM ~4-1" : (encBits == 3) ? "VADPCM ~5-1" : "VADPCM ~6-1";
 
     argv += optind - 1;
     if ((ifile = fopen(argv[1], MODE_READ)) == NULL)
@@ -288,12 +306,25 @@ int main(int argc, char **argv)
     BSWAP32(Header.ckID)
     BSWAP32(Header.ckSize)
     fwrite(&Header, sizeof(ChunkHeader), 1, ofile);
-    CommChunk.compressionTypeH = 0x5641; // VA
-    CommChunk.compressionTypeL = 0x5043; // PC
+    if (encBits == 2)
+    {
+        CommChunk.compressionTypeH = 0x4144; // AD
+        CommChunk.compressionTypeL = 0x5035; // P5
+    }
+    else if (encBits == 3)
+    {
+        CommChunk.compressionTypeH = 0x4144; // AD
+        CommChunk.compressionTypeL = 0x5037; // P7
+    }
+    else
+    {
+        CommChunk.compressionTypeH = 0x5641; // VA
+        CommChunk.compressionTypeL = 0x5043; // PC
+    }
     cChunkPos = ftell(ofile);
     // CommChunk written later
     fwrite(&CommChunk, sizeof(CommonChunk), 1, ofile);
-    strnLen = sizeof("VADPCM ~4-1") - 1;
+    strnLen = 11; // strlen(compName)
     fwrite(&strnLen, 1, 1, ofile);
     fwrite(compName, strnLen, 1, ofile);
 
@@ -386,9 +417,9 @@ int main(int argc, char **argv)
                 if (fread(inBuffer, sizeof(s16), 16, ifile) == 16)
                 {
                     BSWAP16_MANY(inBuffer, 16)
-                    vencodeframe(ofile, inBuffer, state, coefTable, order, npredictors, 16);
+                    vencodeframe(ofile, inBuffer, state, coefTable, order, npredictors, 16, frameSize);
                     currentPos += 16;
-                    nBytes += 9;
+                    nBytes += frameSize;
                 }
                 else
                 {
@@ -418,8 +449,8 @@ int main(int argc, char **argv)
                     if (fread(inBuffer, sizeof(s16), 16, ifile) == 16)
                     {
                         BSWAP16_MANY(inBuffer, 16)
-                        vencodeframe(ofile, inBuffer, state, coefTable, order, npredictors, 16);
-                        nBytes += 9;
+                        vencodeframe(ofile, inBuffer, state, coefTable, order, npredictors, 16, frameSize);
+                        nBytes += frameSize;
                     }
                 }
                 left = aloops[i].end - currentPos;
@@ -428,8 +459,8 @@ int main(int argc, char **argv)
                 fseek(ifile, startPointer, SEEK_SET);
                 fread(inBuffer + left, sizeof(s16), 16 - left, ifile);
                 BSWAP16_MANY(inBuffer + left, 16 - left)
-                vencodeframe(ofile, inBuffer, state, coefTable, order, npredictors, 16);
-                nBytes += 9;
+                vencodeframe(ofile, inBuffer, state, coefTable, order, npredictors, 16, frameSize);
+                nBytes += frameSize;
                 currentPos = aloops[i].start - left + 16;
                 nRepeats--;
             }
@@ -458,9 +489,9 @@ int main(int argc, char **argv)
         if (fread(inBuffer, 2, nsam, ifile) == nsam)
         {
             BSWAP16_MANY(inBuffer, nsam)
-            vencodeframe(ofile, inBuffer, state, coefTable, order, npredictors, nsam);
+            vencodeframe(ofile, inBuffer, state, coefTable, order, npredictors, nsam, frameSize);
             currentPos += nsam;
-            nBytes += 9;
+            nBytes += frameSize;
         }
         else
         {
@@ -511,7 +542,7 @@ int main(int argc, char **argv)
     BSWAP32(CSndChunk.ckSize)
     fwrite(&CSndChunk, sizeof(ChunkHeader), 1, ofile);
     fseek(ofile, cChunkPos, SEEK_SET);
-    nFrames = nBytes * 16 / 9;
+    nFrames = nBytes * 16 / frameSize;
     CommChunk.numFramesH = nFrames >> 16;
     CommChunk.numFramesL = nFrames & 0xffff;
     BSWAP16(CommChunk.numChannels)

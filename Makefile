@@ -33,7 +33,7 @@ $(eval $(call validate-option,COMPILER,ido gcc))
 #   eu - builds the 1997 PAL version
 #   sh - builds the 1997 Japanese Shindou version, with rumble pak support
 #   cn - builds the 2003 Chinese iQue version
-VERSION ?= us
+VERSION ?= sh
 $(eval $(call validate-option,VERSION,jp us eu sh cn))
 
 ifeq      ($(VERSION),jp)
@@ -150,6 +150,32 @@ ifeq ($(VERBOSE),0)
   V := @
 endif
 
+# VADPCM_BITS - bits per sample used to encode all samples:
+
+# 4 (bits / sample) default quality (~1.08 MB/m single stream @ 32000hz)
+# 3 (bits / sample) lower quality   (~0.84 MB/m single stream @ 32000hz)
+# 2 (bits / sample) lowest quality  (~0.60 MB/m single stream @ 32000hz)
+
+# Alternatively, "4bit", "3bit", "2bit" can be added to a AIFF source's filename
+# to enforce a specific type of quality encode for that specific file.
+
+# Quality can be slightly increased by adding "4predict" to a file to use
+# 4 VADPCM predictors, at the cost of more RAM usage.
+
+ifeq ($(VERSION_SH_CN),true)
+  VADPCM_BITS ?= 2
+else
+  VADPCM_BITS := 4
+endif
+$(eval $(call validate-option,VADPCM_BITS,2 3 4))
+
+ifeq ($(VADPCM_BITS),4)
+  VADPCM_TABLEDESIGN ?= 0
+else
+  VADPCM_TABLEDESIGN ?= 1
+endif
+$(eval $(call validate-option,VADPCM_TABLEDESIGN,0 1))
+
 # Whether to colorize build messages
 COLOR ?= 1
 
@@ -168,6 +194,12 @@ ifeq ($(filter clean distclean,$(MAKECMDGOALS)),)
     $(info Build Matching: no)
   else
     $(info Build Matching: yes)
+  endif
+  $(info Sample codec:   $(VADPCM_BITS)-bit VADPCM)
+  ifeq ($(VADPCM_TABLEDESIGN),1)
+    $(info Codebooks:      tabledesign, 2 predictors (4 for samples tagged 4predict))
+  else
+    $(info Codebooks:      from extracted AIFFs)
   endif
   $(info =======================)
 endif
@@ -307,16 +339,16 @@ IQUE_EGCS_PATH := $(TOOLS_DIR)/ique_egcs
 IQUE_LD_PATH := $(TOOLS_DIR)/ique_ld
 
 # detect prefix for MIPS toolchain
-ifneq      ($(call find-command,mips-linux-gnu-ld),)
-  CROSS := mips-linux-gnu-
-else ifneq ($(call find-command,mips64-linux-gnu-ld),)
-  CROSS := mips64-linux-gnu-
-else ifneq ($(call find-command,mips64-elf-ld),)
-  CROSS := mips64-elf-
-else
-  $(error Unable to detect a suitable MIPS toolchain installed)
-endif
-
+#ifneq      ($(call find-command,mips-linux-gnu-ld),)
+#  CROSS := mips-linux-gnu-
+#else ifneq ($(call find-command,mips64-linux-gnu-ld),)
+#  CROSS := mips64-linux-gnu-
+#else ifneq ($(call find-command,mips64-elf-ld),)
+#  CROSS := mips64-elf-
+#else
+#  $(error Unable to detect a suitable MIPS toolchain installed)
+#endif
+CROSS := ~/opt/mips64-elf/bin/mips64-elf-
 AS            := $(CROSS)as
 ifeq ($(COMPILER),gcc)
   CC          := $(CROSS)gcc
@@ -429,7 +461,20 @@ N64GRAPHICS           := $(TOOLS_DIR)/sm64tools/n64graphics
 N64GRAPHICS_CI        := $(TOOLS_DIR)/sm64tools/n64graphics_ci
 TEXTCONV              := $(TOOLS_DIR)/textconv
 AIFF_EXTRACT_CODEBOOK := $(TOOLS_DIR)/aiff_extract_codebook
+TABLEDESIGN           := $(TOOLS_DIR)/tabledesign
 VADPCM_ENC            := $(TOOLS_DIR)/vadpcm_enc
+VADPCM_ENC_FLAGS      := -b $(VADPCM_BITS)
+vadpcm-enc-flags = $(if $(findstring 2bit,$(notdir $(1))),-b 2,$(if $(findstring 3bit,$(notdir $(1))),-b 3,$(if $(findstring 4bit,$(notdir $(1))),-b 4,$(VADPCM_ENC_FLAGS))))
+
+# 4predict increases codebook size, for slightly increased quality and ram usage
+
+is-4predict = $(findstring 4predict,$(notdir $(1)))
+tabledesign-bits = $(if $(call is-4predict,$(1)),2,1)
+# Stamp file holding the encoder flags, so that changing VADPCM_BITS re-encodes the samples
+VADPCM_ENC_STAMP      := $(BUILD_DIR)/sound/vadpcm_enc_flags
+ifeq ($(filter clean distclean print-%,$(MAKECMDGOALS)),)
+  DUMMY != mkdir -p $(BUILD_DIR)/sound && ([ "$$(cat $(VADPCM_ENC_STAMP) 2>/dev/null)" = "flags=$(VADPCM_ENC_FLAGS) tabledesign=$(VADPCM_TABLEDESIGN) npred=2" ] || echo "flags=$(VADPCM_ENC_FLAGS) tabledesign=$(VADPCM_TABLEDESIGN) npred=2" > $(VADPCM_ENC_STAMP))
+endif
 EXTRACT_DATA_FOR_MIO  := $(TOOLS_DIR)/extract_data_for_mio
 SKYCONV               := $(TOOLS_DIR)/skyconv
 # Use the system installed armips if available. Otherwise use the one provided with this repository.
@@ -439,7 +484,7 @@ else
   RSPASM              := $(TOOLS_DIR)/armips
 endif
 ENDIAN_BITWIDTH       := $(BUILD_DIR)/endian-and-bitwidth
-EMULATOR = mupen64plus
+EMULATOR = parallel-launcher
 EMU_FLAGS = --noosd
 LOADER = loader64
 LOADER_FLAGS = -vwf
@@ -498,7 +543,8 @@ libultra: $(BUILD_DIR)/libultra.a
 $(BUILD_DIR)/asm/ipl3_font.o:         $(IPL3_RAW_FILES)
 $(BUILD_DIR)/src/game/crash_screen.o: $(CRASH_TEXTURE_C_FILES)
 $(BUILD_DIR)/lib/rsp.o:               $(BUILD_DIR)/rsp/rspboot.bin $(BUILD_DIR)/rsp/fast3d.bin $(BUILD_DIR)/rsp/audio.bin
-$(SOUND_BIN_DIR)/sound_data.o:        $(SOUND_BIN_DIR)/sound_data.ctl.inc.c $(SOUND_BIN_DIR)/sound_data.tbl.inc.c $(SOUND_BIN_DIR)/sequences.bin.inc.c $(SOUND_BIN_DIR)/bank_sets.inc.c
+# use asm for sound data, IDO kept crashing
+$(SOUND_BIN_DIR)/sound_data.o:        $(SOUND_BIN_DIR)/sound_data.ctl $(SOUND_BIN_DIR)/sound_data.tbl $(SOUND_BIN_DIR)/sequences.bin $(SOUND_BIN_DIR)/bank_sets
 $(BUILD_DIR)/levels/scripts.o:        $(BUILD_DIR)/include/level_headers.h
 
 ifeq ($(VERSION_SH_CN),true)
@@ -580,9 +626,8 @@ $(BUILD_DIR)/%.ci4: %.ci4.png
 $(BUILD_DIR)/%.elf: $(BUILD_DIR)/%.o
 	$(call print,Linking ELF file:,$<,$@)
 	$(V)$(LD) -e 0 -Ttext=$(SEGMENT_ADDRESS) -Map $@.map -o $@ $<
-# Override for leveldata.elf, which otherwise matches the above pattern
-.SECONDEXPANSION:
-$(BUILD_DIR)/levels/%/leveldata.elf: $(BUILD_DIR)/levels/%/leveldata.o $(BUILD_DIR)/bin/$$(TEXTURE_BIN).elf
+# fixed for Make 4.4
+$(BUILD_DIR)/levels/%/leveldata.elf: $(BUILD_DIR)/levels/%/leveldata.o
 	$(call print,Linking ELF file:,$<,$@)
 	$(V)$(LD) -e 0 -Ttext=$(SEGMENT_ADDRESS) -Map $@.map --just-symbols=$(BUILD_DIR)/bin/$(TEXTURE_BIN).elf -o $@ $<
 
@@ -609,13 +654,18 @@ $(BUILD_DIR)/%.mio0.o: $(BUILD_DIR)/%.mio0
 # Sound File Generation                                                        #
 #==============================================================================#
 
-$(BUILD_DIR)/%.table: %.aiff
-	$(call print,Extracting codebook:,$<,$@)
-	$(V)$(AIFF_EXTRACT_CODEBOOK) $< >$@
+$(BUILD_DIR)/%.table: %.aiff $(VADPCM_ENC_STAMP)
+ifeq ($(VADPCM_TABLEDESIGN),1)
+	$(call print,Designing codebook:,$<,$@)
+	$(V)$(TABLEDESIGN) -s $(call tabledesign-bits,$@) $< >$@
+else
+	$(if $(call is-4predict,$@),$(call print,Designing codebook:,$<,$@),$(call print,Extracting codebook:,$<,$@))
+	$(V)$(if $(call is-4predict,$@),$(TABLEDESIGN) -s 2,$(AIFF_EXTRACT_CODEBOOK)) $< >$@
+endif
 
-$(BUILD_DIR)/%.aifc: $(BUILD_DIR)/%.table %.aiff
+$(BUILD_DIR)/%.aifc: $(BUILD_DIR)/%.table %.aiff $(VADPCM_ENC_STAMP)
 	$(call print,Encoding ADPCM:,$(word 2,$^),$@)
-	$(V)$(VADPCM_ENC) -c $^ $@
+	$(V)$(VADPCM_ENC) $(call vadpcm-enc-flags,$@) -c $(word 1,$^) $(word 2,$^) $@
 
 $(ENDIAN_BITWIDTH): $(TOOLS_DIR)/determine-endian-bitwidth.c
 	@$(PRINT) "$(GREEN)Generating endian-bitwidth $(NO_COL)\n"

@@ -79,6 +79,8 @@
 #define A_INIT                  0x01
 #define A_CONTINUE              0x00
 #define A_LOOP                  0x02
+#define A_ADPCM_SHORT           0x04 // 2 bit vadpcm
+#define A_ADPCM_3BIT            0x0C // 3 bit vadpcm
 #define A_OUT                   0x02
 #define A_LEFT                  0x02
 #define A_RIGHT                 0x00

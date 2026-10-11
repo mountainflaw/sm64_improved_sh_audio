@@ -156,6 +156,7 @@ define level_rules =
     $(1)_SEG7_FILES     := $$(patsubst %.png,%.inc.c,$$(wildcard levels/$(1)/*.png))
     $$(BUILD_DIR)/levels/$(1)/leveldata.o: $$(addprefix $$(BUILD_DIR)/,$$($(1)_SEG7_FILES))
     $$(BUILD_DIR)/levels/$(1)/leveldata.elf: TEXTURE_BIN := $(2)
+    $$(BUILD_DIR)/levels/$(1)/leveldata.elf: $$(BUILD_DIR)/bin/$(2).elf
 endef
 
 ifneq ($(MAKECMDGOALS),clean)

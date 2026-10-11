@@ -107,10 +107,12 @@ void clamp(s32 fs, f32 *e, s32 *ie, s32 bits);
 s32 clip(s32 ix, s32 llevel, s32 ulevel);
 
 // vdecode.c
-void vdecodeframe(FILE *ifile, s32 *outp, s32 order, s32 ***coefTable);
+void vdecodeframe(FILE *ifile, s32 *outp, s32 order, s32 ***coefTable, s32 frameSize);
 
 // vencode.c
-void vencodeframe(FILE *ofile, s16 *inBuffer, s32 *state, s32 ***coefTable, s32 order, s32 npredictors, s32 nsam);
+void vencodeframe(FILE *ofile, s16 *inBuffer, s32 *state, s32 ***coefTable, s32 order, s32 npredictors, s32 nsam, s32 frameSize);
+s32 vadpcm_bits_for_frame_size(s32 frameSize);
+void vadpcm_pack_frame(FILE *ofile, s32 *ix, s32 frameSize);
 
 // util.c
 u32 readbits(u32 nbits, FILE *ifile);

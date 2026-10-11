@@ -19,14 +19,34 @@ WORD_BYTES = 4
 orderedJsonDecoder = JSONDecoder(object_pairs_hook=OrderedDict)
 
 
+CODEC_ADPCM = 0
+CODEC_SMALL_ADPCM = 3
+CODEC_ADPCM_3BIT = 4
+
+COMPRESSION_TYPE_TO_CODEC = {
+    b"VAPC": CODEC_ADPCM, # 4 bit (9 b/16 sample frame)
+    b"ADP9": CODEC_ADPCM,
+    b"ADP5": CODEC_SMALL_ADPCM, # 3 bit (5b/16 sample frame)
+    b"ADP7": CODEC_ADPCM_3BIT, # 2 bit (7b/16 sample frame)
+}
+
+CODEC_FRAME_SIZE = {
+    CODEC_ADPCM: 9,
+    CODEC_SMALL_ADPCM: 5,
+    CODEC_ADPCM_3BIT: 7,
+}
+
+
 class Aifc:
-    def __init__(self, name, fname, data, sample_rate, book, loop):
+    def __init__(self, name, fname, data, sample_rate, book, loop, codec):
         self.name = name
         self.fname = fname
         self.data = data
         self.sample_rate = sample_rate
         self.book = book
         self.loop = loop
+        self.codec = codec
+        self.frame_size = CODEC_FRAME_SIZE[codec]
         self.used = False
         self.offset = None
 
@@ -142,6 +162,7 @@ def parse_aifc(data, name, fname):
     vadpcm_codes = None
     vadpcm_loops = None
     sample_rate = None
+    compression_type = None
 
     for (tp, data) in sections:
         if tp == b"APPL" and data[:4] == b"stoc":
@@ -156,14 +177,27 @@ def parse_aifc(data, name, fname):
             audio_data = data[8:]
         elif tp == b"COMM":
             sample_rate = parse_f80(data[8:18])
+            compression_type = data[18:22]
 
     validate(sample_rate is not None, "no COMM section")
+    validate(
+        compression_type in COMPRESSION_TYPE_TO_CODEC,
+        "unsupported AIFC compression type " + repr(compression_type),
+    )
     validate(audio_data is not None, "no SSND section")
     validate(vadpcm_codes is not None, "no VADPCM table")
 
     book = parse_aifc_book(vadpcm_codes)
     loop = parse_aifc_loop(vadpcm_loops) if vadpcm_loops is not None else None
-    return Aifc(name, fname, audio_data, sample_rate, book, loop)
+    return Aifc(
+        name,
+        fname,
+        audio_data,
+        sample_rate,
+        book,
+        loop,
+        COMPRESSION_TYPE_TO_CODEC[compression_type],
+    )
 
 
 class ReserveSerializer:
@@ -554,9 +588,20 @@ def serialize_ctl(bank, base_ser, is_shindou):
         sample_name_to_addr[name] = ser.size
         aifc = bank.sample_bank.name_to_entry[name]
         sample_len = len(aifc.data)
+        frame_size = aifc.frame_size
 
         # Sample
-        ser.add(pack("IX", align(sample_len, 2) if is_shindou else 0))
+        if is_shindou:
+            # u32 codec : 4; u32 medium : 2; u32 bit26 : 1; u32 isPatched : 1; u32 size : 24;
+            ser.add(pack("IX", (aifc.codec << 28) | align(sample_len, 2)))
+        else:
+            validate(
+                aifc.codec == CODEC_ADPCM,
+                "sample "
+                + aifc.fname
+                + " uses a codec that only the SH/CN audio engine supports",
+            )
+            ser.add(pack("IX", 0))
         ser.add(pack("P", aifc.offset))
         loop_addr_buf = ser.reserve(WORD_BYTES)
         book_addr_buf = ser.reserve(WORD_BYTES)
@@ -574,8 +619,11 @@ def serialize_ctl(bank, base_ser, is_shindou):
         # Loop
         loop_addr_buf.append(pack("P", ser.size))
         if aifc.loop is None:
-            assert sample_len % 9 in [0, 1]
-            end = sample_len // 9 * 16 + (sample_len % 2) + (sample_len % 9)
+            assert sample_len % frame_size in [0, 1]
+            if frame_size == 9:
+                end = sample_len // 9 * 16 + (sample_len % 2) + (sample_len % 9)
+            else:
+                end = sample_len // frame_size * 16
             ser.add(pack("IIiI", 0, end, 0, 0))
         else:
             ser.add(pack("IIiI", aifc.loop.start, aifc.loop.end, aifc.loop.count, 0))

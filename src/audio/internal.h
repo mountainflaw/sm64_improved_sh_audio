@@ -46,6 +46,11 @@
 #define CODEC_S8 1
 #define CODEC_SKIP 2
 
+#if defined(VERSION_SH) || defined(VERSION_CN)
+#define CODEC_SMALL_ADPCM 3
+#define CODEC_ADPCM_3BIT 4
+#endif
+
 #ifdef VERSION_JP
 #define TEMPO_SCALE 1
 #else
